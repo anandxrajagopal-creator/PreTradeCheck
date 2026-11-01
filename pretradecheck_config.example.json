@@ -1,0 +1,56 @@
+{
+  "dhan": {
+    "credentials_file": "C:\\Users\\ANAND R\\PycharmProjects\\ProTraderBacktester\\dhan_credentials.json",
+    "credential_keys": {
+      "client_id": "client_id",
+      "pin": "pin",
+      "totp_secret": "totp_secret"
+    },
+    "client_id": "",
+    "pin": "",
+    "totp_secret": ""
+  },
+  "telegram": {
+    "bot_token": "PUT_ProTraderSetupBot_TOKEN_HERE",
+    "chat_id": [
+      "PUT_YOUR_CHAT_ID_HERE"
+    ]
+  },
+  "recorder": {
+    "folder": "C:\\Users\\ANAND R\\PycharmProjects\\ProTraderBacktester\\recorded_options",
+    "glob": "*.csv",
+    "min_size_kb": 5
+  },
+  "scheduler": {
+    "folders": [
+      "ProTrader"
+    ],
+    "extra_tasks": [
+      "PreMarketSummary"
+    ]
+  },
+  "indices": [
+    {
+      "name": "NIFTY",
+      "security_id": 13
+    },
+    {
+      "name": "BANKNIFTY",
+      "security_id": 25
+    },
+    {
+      "name": "SENSEX",
+      "security_id": 51
+    }
+  ],
+  "auto_update_holidays": true,
+  "holiday_segment": "FO",
+  "holidays": [],
+  "risk_rules": [
+    "Max 3 trades. Max day loss Rs 1,500 -> stop for the day",
+    "Capital per trade < Rs 10K, SL decided BEFORE entry",
+    "No trade 9:15-9:20. NIFTY: Swap (matched) > Swap (same strike) > SS",
+    "ProTrader 5M on stocks only (index backtest pending)",
+    "Exit OTM options by 2:30 PM on expiry / pre-expiry day"
+  ]
+}

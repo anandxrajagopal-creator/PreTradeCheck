@@ -1,0 +1,13 @@
+# secrets - never commit
+pretradecheck_config.json
+*.env
+.env
+*credentials*
+
+# environment / runtime
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.log
+.idea/
