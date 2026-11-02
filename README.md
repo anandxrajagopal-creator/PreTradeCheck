@@ -1,6 +1,6 @@
 # PreTradeCheck
 
-Night-before trading health check. Runs at 8 PM (Sun–Thu) via Task Scheduler and sends one
+Night-before trading health check. Runs at 8:30 PM (Sun–Thu) via Task Scheduler and sends one
 Telegram report through **ProTraderSetupBot**:
 
 - **Systems** – NSE holiday auto-update, Dhan login (TOTP), Data API plan validity,
