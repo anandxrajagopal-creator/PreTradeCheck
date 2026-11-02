@@ -307,15 +307,46 @@ def index_expiry(dhan, sec_id, next_day):
     return upcoming[0]
 
 
-def prev_day_ohlc(dhan, sec_id):
+IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
+
+
+def expected_last_session(holidays):
+    """Last trading day whose session has closed (today if it is a trading day and after 15:35 IST)."""
+    now = dt.datetime.now(IST)
+    t = now.date()
+    if is_trading_day(t, holidays) and now.time() >= dt.time(15, 35):
+        return t
+    return last_trading_day(t, holidays, include_today=False)
+
+
+def prev_day_ohlc(dhan, sec_id, holidays):
+    """Returns (day, high, low, close, source). Falls back to 5-min intraday candles when the
+    daily candle for the last session is not published yet (Dhan updates daily data late)."""
+    want = expected_last_session(holidays)
     to_d = today_ist() + dt.timedelta(days=1)
     from_d = to_d - dt.timedelta(days=15)
     d = dhan.post("/charts/historical", {
         "securityId": str(sec_id), "exchangeSegment": NIFTY_SEG, "instrument": "INDEX",
         "expiryCode": 0, "oi": False, "fromDate": from_d.isoformat(), "toDate": to_d.isoformat()})
     i = len(d["close"]) - 1
-    day = dt.datetime.fromtimestamp(d["timestamp"][i], dt.timezone(dt.timedelta(hours=5, minutes=30))).date()
-    return day, float(d["high"][i]), float(d["low"][i]), float(d["close"][i])
+    day = dt.datetime.fromtimestamp(d["timestamp"][i], IST).date()
+    if day >= want:
+        return day, float(d["high"][i]), float(d["low"][i]), float(d["close"][i]), "daily"
+
+    # daily candle missing -> build it from today's 5-minute candles
+    time.sleep(1)
+    m = dhan.post("/charts/intraday", {
+        "securityId": str(sec_id), "exchangeSegment": NIFTY_SEG, "instrument": "INDEX",
+        "interval": "5", "oi": False,
+        "fromDate": f"{want:%Y-%m-%d} 09:15:00", "toDate": f"{want:%Y-%m-%d} 15:30:00"})
+    idx = [k for k, ts in enumerate(m.get("timestamp", []))
+           if dt.datetime.fromtimestamp(ts, IST).date() == want]
+    if not idx:
+        raise RuntimeError(f"no daily or intraday data for {want:%d-%b} (latest daily candle {day:%d-%b})")
+    h = max(float(m["high"][k]) for k in idx)
+    l = min(float(m["low"][k]) for k in idx)
+    c = float(m["close"][idx[-1]])
+    return want, h, l, c, "5m"
 
 
 def pivots(h, l, c):
@@ -370,9 +401,10 @@ def index_block(dhan, idx, nd, holidays):
     pv = None
     try:
         time.sleep(1)
-        day, h, l, c = prev_day_ohlc(dhan, sid)
+        day, h, l, c, src = prev_day_ohlc(dhan, sid, holidays)
         pv = pivots(h, l, c)
-        out.append(f"Prev day {day:%d-%b}: H {h:.0f} | L {l:.0f} | C {c:.0f} | Range {h-l:.0f}")
+        out.append(f"Prev day {day:%d-%b}: H {h:.0f} | L {l:.0f} | C {c:.0f} | Range {h-l:.0f}"
+                   + (" (built from 5m candles)" if src == "5m" else ""))
         out.append(f"R2 {pv['R2']:.0f} | R1 {pv['R1']:.0f} | P {pv['P']:.0f} | S1 {pv['S1']:.0f} | S2 {pv['S2']:.0f}")
         cpr_kind = "NARROW → trending day likely" if pv["CPR_width_pct"] < 0.2 else (
             "WIDE → sideways day likely" if pv["CPR_width_pct"] > 0.5 else "normal")
