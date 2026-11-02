@@ -435,6 +435,10 @@ def index_block(dhan, idx, nd, holidays):
 
 
 # ----------------------------------------------------------------------------- main
+DEFAULT_DISCLAIMER = ("ℹ️ Not a SEBI-registered adviser. Levels are for educational purposes only, "
+                      "not buy/sell advice. F&O trading carries high risk - always use a stop-loss.")
+
+
 def build_report(cfg, holiday_line=None):
     holidays = set(cfg.get("holidays", []))
     t = today_ist()
@@ -454,6 +458,7 @@ def build_report(cfg, holiday_line=None):
         h = dt.date.fromisoformat(upcoming[0])
         nm = names.get(upcoming[0], "")
         out.append(f"Next NSE holiday: {h:%a %d-%b}" + (f" ({nm})" if nm else ""))
+    header = list(out)          # title + holiday line (shared with friends)
     out.append("")
     out.append("— SYSTEMS —")
     if holiday_line:
@@ -482,6 +487,7 @@ def build_report(cfg, holiday_line=None):
         except Exception as e:
             mark(WARN); out.append(f"{WARN} {e}")
 
+    market_start = len(out)     # everything from here on is market info (shared with friends)
     if logged_in:
         for i, idx in enumerate(cfg.get("indices", DEFAULT_INDICES)):
             if i:
@@ -500,8 +506,14 @@ def build_report(cfg, holiday_line=None):
     verdict = {OK: "✅ ALL GOOD - ready for tomorrow",
                WARN: "⚠️ CHECK THE WARNINGS ABOVE",
                FAIL: "❌ FIX BEFORE MARKET OPEN"}[worst]
+    market = None
+    if logged_in:
+        title = header[0].replace("🗓 PRE-TRADE CHECK", "📊 MARKET SETUP")
+        disclaimer = cfg.get("telegram", {}).get("friends_disclaimer", DEFAULT_DISCLAIMER)
+        market = "\n".join([title] + header[1:] + out[market_start:]
+                           + ([disclaimer] if disclaimer else []))
     out.insert(1, verdict)
-    return "\n".join(out), worst
+    return "\n".join(out), worst, market
 
 
 def main():
@@ -526,9 +538,9 @@ def main():
     if cfg.get("auto_update_holidays", True):
         holiday_line = update_holidays_in_config(cfg, args.config)
     try:
-        report, worst = build_report(cfg, holiday_line)
+        report, worst, market = build_report(cfg, holiday_line)
     except Exception:
-        report, worst = "❌ PreTradeCheck crashed:\n" + traceback.format_exc()[-1500:], FAIL
+        report, worst, market = "❌ PreTradeCheck crashed:\n" + traceback.format_exc()[-1500:], FAIL, None
 
     print(report)
     try:  # keep a log, because a headless (pythonw) run has no window
@@ -536,12 +548,17 @@ def main():
             f.write(f"\n===== {dt.datetime.now():%Y-%m-%d %H:%M:%S} =====\n{report}\n")
     except Exception:
         pass
+    if args.dry_run and market:
+        print("\n----- FRIENDS GET THIS -----\n" + market)
     if not args.dry_run:
         tg = cfg["telegram"]
-        ids = tg["chat_id"] if isinstance(tg["chat_id"], list) else [tg["chat_id"]]
-        for cid in [str(c).strip() for c in ids if str(c).strip()]:
+        as_list = lambda v: [str(c).strip() for c in (v if isinstance(v, list) else [v]) if str(c).strip()]
+        me = as_list(tg.get("chat_id", []))
+        friends = [c for c in as_list(tg.get("friend_chat_ids", [])) if c not in me]
+        jobs = [(c, report) for c in me] + ([(c, market) for c in friends] if market else [])
+        for cid, text in jobs:
             try:
-                send_telegram(tg["bot_token"], cid, report)
+                send_telegram(tg["bot_token"], cid, text)
             except Exception as e:
                 print(f"Telegram send to {cid} failed: {e}")
                 try:
