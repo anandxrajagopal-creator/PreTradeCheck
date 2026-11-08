@@ -259,12 +259,41 @@ SCHTASK_RESULTS = {"0": "OK", "1": "error 1", "267009": "running", "267011": "ne
                    "267014": "terminated", "2147750687": "already running"}
 
 
+def check_server_jobs(sc):
+    """Linux server: last result of every job the server kit ran (~/trading/status/<job>.status)."""
+    folder = os.path.expanduser(sc.get("server_status_dir", "~/trading/status"))
+    on_file = os.path.join(os.path.dirname(folder), "projects_on.txt")
+    if not os.path.isdir(folder):
+        return WARN, [f"{WARN} Server job check skipped (no {folder})"]
+    worst, lines = OK, []
+    for fn in sorted(os.listdir(folder)):
+        if not fn.endswith(".status"):
+            continue
+        try:
+            start, end, rc = open(os.path.join(folder, fn), encoding="utf-8").read().strip().split("|")
+        except (OSError, ValueError):
+            continue
+        name = fn[:-7]
+        st = OK if rc in ("0", "124") else FAIL
+        txt = {"0": "OK", "124": "stopped at time limit"}.get(rc, f"error {rc}")
+        worst = FAIL if FAIL in (worst, st) else worst
+        lines.append(f"{st} {name}: last={txt}, ran {start}")
+    if not lines:
+        return WARN, [f"{WARN} No server jobs have run yet"]
+    try:
+        on = ", ".join(l.strip() for l in open(on_file, encoding="utf-8") if l.strip())
+        lines.insert(0, f"{OK} Server projects ON: {on or 'none'}")
+    except OSError:
+        pass
+    return worst, lines
+
+
 def check_scheduler(cfg):
     sc = cfg.get("scheduler", {})
     folders = [f.strip("\\").lower() for f in sc.get("folders", ["ProTrader"])]
     names = [n.lower() for n in sc.get("extra_tasks", [])]
     if os.name != "nt":
-        return WARN, [f"{WARN} Task Scheduler check skipped (not Windows)"]
+        return check_server_jobs(sc)
     out = subprocess.run(["schtasks", "/query", "/fo", "CSV", "/v"], capture_output=True,
                          text=True, encoding="mbcs", errors="replace",
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
