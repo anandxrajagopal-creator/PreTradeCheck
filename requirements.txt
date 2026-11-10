@@ -1,2 +1,4 @@
 requests
 pyotp
+yfinance
+tzdata
