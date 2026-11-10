@@ -1,7 +1,7 @@
 """
 global_cues.py  -  GLOBAL CUES for the 6:30 AM morning report (MorningCues.py).
 
-  • GIFT Nifty    : optional hook (config global_cues.gift_nifty_source) - no free official feed
+  • GIFT Nifty    : NSE market-status feed (same source as ProTrader preopen_fno.py)
   • US markets    : Dow, S&P 500, Nasdaq (last session close)  +  S&P / Nasdaq futures (live)
   • Asian markets : Nikkei, Kospi, ASX 200, Taiwan, Hang Seng, Shanghai, Straits Times
                     -> 'live' if trading has started today, otherwise previous close
@@ -34,6 +34,15 @@ MACRO = [("Brent", "BZ=F", "$"), ("WTI", "CL=F", "$"), ("USD/INR", "INR=X", "₹
          ("US VIX", "^VIX", "")]
 
 FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+NSE_HOME = "https://www.nseindia.com"
+NSE_STATUS = "https://www.nseindia.com/api/marketStatus"
+NSE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nseindia.com/",
+}
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -122,6 +131,51 @@ def us_events(now_ist, until_ist, impacts=("High",)):
     return lines
 
 
+# ----------------------------------------------------------------------------- GIFT Nifty
+def _num(x):
+    try:
+        return float(str(x).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def gift_nifty(tries=3):
+    """GIFT Nifty from NSE's market-status feed (same source as preopen_fno.py).
+    Returns (last, pct_change, timestamp_text)."""
+    import time
+    last_err = None
+    for k in range(1, tries + 1):
+        try:
+            s = requests.Session()
+            s.headers.update(NSE_HEADERS)
+            s.get(NSE_HOME, timeout=20)          # NSE needs its cookies first
+            time.sleep(1)
+            r = s.get(NSE_STATUS, timeout=20)
+            r.raise_for_status()
+            g = r.json().get("giftnifty") or {}
+            last, pct = _num(g.get("LASTPRICE")), _num(g.get("PERCHANGE"))
+            if not last:
+                raise RuntimeError("no GIFT Nifty price in NSE feed")
+            return last, pct, str(g.get("TIMESTMP") or "")
+        except Exception as e:
+            last_err = e
+            time.sleep(3 * k)
+    raise RuntimeError(str(last_err)[:80])
+
+
+def gift_line():
+    last, pct, ts = gift_nifty()
+    when = ""
+    for fmt in ("%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M"):
+        try:
+            when = f" · as of {dt.datetime.strptime(ts, fmt):%d-%b %H:%M}"
+            break
+        except ValueError:
+            continue
+    pct_txt = f" ({pct:+.2f}%)" if pct is not None else ""
+    return f"{_arrow(pct or 0)} GIFT Nifty: {last:,.1f}{pct_txt}{when}"
+
+
 # ----------------------------------------------------------------------------- main block
 def morning_cues(cfg=None, now=None):
     """Returns (lines, status) for the 6:30 AM report."""
@@ -130,14 +184,11 @@ def morning_cues(cfg=None, now=None):
     now = (now or dt.datetime.now(IST)).astimezone(IST)
     out, st = [], OK
 
-    src = gc.get("gift_nifty_source")
-    if src:
+    if gc.get("gift_nifty", True):
         try:
-            mod, fn = src.rsplit(".", 1)
-            price, chg = getattr(__import__(mod, fromlist=[fn]), fn)()
-            out += ["— GIFT NIFTY —", f"{_arrow(chg)} GIFT Nifty: {price:,.1f} ({chg:+.2f}%)", ""]
+            out += ["— GIFT NIFTY —", gift_line(), ""]
         except Exception as e:
-            st = WARN; out += [f"{WARN} GIFT Nifty: {str(e)[:60]}", ""]
+            st = WARN; out += ["— GIFT NIFTY —", f"{WARN} GIFT Nifty not available: {str(e)[:60]}", ""]
 
     try:
         tickers = ([t for _, t in US_INDICES] + [t for _, t in US_FUTURES] + [a[1] for a in ASIA]
