@@ -168,12 +168,94 @@ def send_telegram(token, chat_id, text):
 
 
 # ----------------------------------------------------------------------------- Dhan
+# Dhan allows ONE live token per login: every new login kills the token the bots / chart engine use.
+# On the server, first reuse a token another program already saved (no new login at all); only log in
+# if none of them is valid, and then share the new token with the bots so they don't log in again either.
+# (On the PC these paths don't exist -> it simply logs in as before.)  Override: dhan.token_files in config.
+TOKEN_FILES = ["~/trading/ProdigyTradingCalculations/state/dhan_token.json",
+               "~/trading/ProTraderBacktester/data_cache/dhan_token.json"]
+SHARE_TOKEN_FILE = TOKEN_FILES[0]
+
+
+def _read_token_file(path, client_id):
+    """A still-valid token for this client id from a saved token file, else None."""
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    tok = d.get("token") or d.get("access_token") or d.get("accessToken")
+    cid = str(d.get("client_id") or d.get("clientId") or d.get("dhanClientId") or "")
+    if not tok or (cid and cid != str(client_id)):
+        return None
+    exp = d.get("expiry") or d.get("expires") or d.get("valid_until")
+    if exp:
+        try:
+            e = dt.datetime.fromisoformat(str(exp).replace("Z", "+00:00"))
+            if e.tzinfo:
+                e = e.astimezone().replace(tzinfo=None)
+            if e - dt.datetime.now() < dt.timedelta(minutes=10):
+                return None
+        except ValueError:
+            pass
+    return tok
+
+
+def _share_token(client_id, token):
+    """Save a freshly made token where the bots look first, so they reuse it instead of logging in."""
+    p = os.path.expanduser(SHARE_TOKEN_FILE)
+    if not os.path.isdir(os.path.dirname(p)):
+        return
+    try:
+        with open(p, encoding="utf-8") as f:
+            if str(json.load(f).get("client_id", client_id)) != str(client_id):
+                return                                   # another Dhan account's file - leave it alone
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"client_id": str(client_id), "token": token,
+                       "expiry": (dt.datetime.now() + dt.timedelta(hours=23)).isoformat()}, f)
+    except OSError:
+        pass
+
+
 class Dhan:
     def __init__(self, client_id):
         self.client_id = client_id
         self.token = None
 
-    def login(self, pin, totp_secret):
+    def reuse_token(self, files):
+        """Use a token another program saved, if Dhan still accepts it. Returns the file used, or None."""
+        for f in files:
+            tok = _read_token_file(f, self.client_id)
+            if not tok:
+                continue
+            self.token = tok
+            try:
+                self.get("/profile")
+                return f
+            except Exception:
+                self.token = None
+        return None
+
+    def login(self, pin, totp_secret, tries=3):
+        """Log in with PIN + TOTP. A refused code ('Invalid TOTP' - e.g. the same 30-s code was just used
+        by another login) is retried with the NEXT code; Dhan also allows one new token per 2 minutes."""
+        waits, last = [35, 125], None
+        for attempt in range(tries):
+            try:
+                return self._login_once(pin, totp_secret)
+            except RuntimeError as e:
+                last = e
+                if "EMPTY" in str(e) or "pyotp" in str(e) or attempt == tries - 1:
+                    raise
+                print(f"Dhan login attempt {attempt + 1} failed ({str(e)[:80]}) - retrying in "
+                      f"{waits[min(attempt, len(waits) - 1)]} s", flush=True)
+                time.sleep(waits[min(attempt, len(waits) - 1)])
+        raise last
+
+    def _login_once(self, pin, totp_secret):
         if pyotp is None:
             raise RuntimeError("pyotp not installed (pip install pyotp)")
         if not str(totp_secret).strip() or not str(pin).strip():
@@ -497,9 +579,14 @@ def build_report(cfg, holiday_line=None):
     dhan = Dhan(dcfg["client_id"])
     logged_in = False
     try:
-        dhan.login(dcfg["pin"], dcfg["totp_secret"])
-        logged_in = True
-        out.append(f"{OK} Dhan login (TOTP) OK")
+        if dhan.reuse_token(dcfg.get("token_files", TOKEN_FILES)):
+            logged_in = True
+            out.append(f"{OK} Dhan token OK (shared with the bots - no new login)")
+        else:
+            dhan.login(dcfg["pin"], dcfg["totp_secret"])
+            logged_in = True
+            _share_token(dcfg["client_id"], dhan.token)
+            out.append(f"{OK} Dhan login (TOTP) OK")
     except Exception as e:
         mark(FAIL)
         out.append(f"{FAIL} Dhan login: {e}")
